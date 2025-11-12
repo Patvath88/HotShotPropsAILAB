@@ -1,0 +1,30 @@
+name: Nightly Accuracy Updater
+
+on:
+  schedule:
+    - cron: "0 8 * * *"  # 3 AM EST (08:00 UTC)
+  workflow_dispatch:
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Install dependencies
+        run: |
+          pip install nba_api pandas numpy
+      - name: Run updater
+        run: |
+          python nightly_updater.py
+      - name: Commit updated data
+        run: |
+          git config user.name "HotShotBot"
+          git config user.email "bot@hotshotprops.ai"
+          git add data/history.csv
+          git commit -m "Nightly accuracy update"
+          git push
