@@ -16,7 +16,15 @@ from datetime import datetime
 from sklearn.ensemble import RandomForestRegressor
 from nba_api.stats.static import teams
 from nba_api.stats.endpoints import playergamelog, commonteamroster
-from nba_api.library.http import NBAStatsHTTP
+# --- Safe NBA API timeout patch (for all versions) ---
+try:
+    import nba_api.library.http as nba_http
+    if hasattr(nba_http, "NBAStatsHTTP"):
+        nba_http.NBAStatsHTTP.TIMEOUT = 10
+    elif hasattr(nba_http, "timeout"):
+        nba_http.timeout = 10
+except Exception:
+    pass  # fallback if library structure changes
 import plotly.graph_objects as go
 import os
 import time
