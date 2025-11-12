@@ -2,10 +2,11 @@
 # Hot Shot Props | AI Player Prediction Lab (BallDontLie Edition)
 # -------------------------------------------------
 # Features:
-# - Select Team → Player
-# - Auto fetches last 5/10/20 games, current season, last season, career averages
-# - RandomForest AI predicts next game stats (PTS, REB, AST, 3PT, STL, BLK, TOV, MIN)
-# - Visualized stat card + saves past predictions for backtesting
+# - Team → Player selection
+# - Pulls from BallDontLie API (fast, no auth)
+# - RandomForest predicts next game statline
+# - Blue/Black ESPN-style visuals
+# - Auto-backtesting log stored locally
 # -------------------------------------------------
 
 import streamlit as st
@@ -42,14 +43,19 @@ os.makedirs("data", exist_ok=True)
 # ---------- UTILS ----------
 @st.cache_data(ttl=3600)
 def get_teams():
+    """Fetch teams and ensure full_name exists"""
     res = requests.get(API_BASE + "teams")
     if res.status_code != 200:
         return pd.DataFrame()
     teams = res.json()["data"]
-    return pd.DataFrame(teams)[["id", "full_name", "abbreviation", "city"]]
+    df = pd.DataFrame(teams)
+    if "full_name" not in df.columns:
+        df["full_name"] = df["city"] + " " + df["name"]
+    return df[["id", "full_name", "abbreviation", "city", "conference", "division"]]
 
 @st.cache_data(ttl=3600)
 def get_players():
+    """Fetch all players (paged)"""
     players = []
     page = 1
     while True:
@@ -61,10 +67,13 @@ def get_players():
             break
         players.extend(data)
         page += 1
+        if len(data) < 100:
+            break
     df = pd.DataFrame(players)
     return df[["id", "first_name", "last_name", "team"]]
 
 def get_player_game_logs(player_id, num_games=20):
+    """Pull last N games for player"""
     logs = []
     page = 1
     while len(logs) < num_games:
@@ -79,20 +88,26 @@ def get_player_game_logs(player_id, num_games=20):
         if len(data) < 100:
             break
     df = pd.DataFrame(logs)
-    if df.empty: return df
+    if df.empty:
+        return df
     df = pd.json_normalize(df)
     df = df.rename(columns={
         "pts": "PTS", "reb": "REB", "ast": "AST", "stl": "STL",
         "blk": "BLK", "turnover": "TOV", "min": "MIN", "fg3m": "3PTM"
     })
-    return df[["game.date", "PTS", "REB", "AST", "3PTM", "STL", "BLK", "TOV", "MIN"]].dropna()
+    cols = ["game.date", "PTS", "REB", "AST", "3PTM", "STL", "BLK", "TOV", "MIN"]
+    df = df[[c for c in cols if c in df.columns]].dropna()
+    return df
 
 def train_predict_model(df):
+    """Train RF model & return prediction summary"""
     if df.empty:
         return {}
     df = df.tail(20)
     df["PTS_next"] = df["PTS"].shift(-1)
     df = df.dropna()
+    if df.empty:
+        return {}
     X = df[["REB", "AST", "3PTM", "STL", "BLK", "TOV", "MIN"]]
     y = df["PTS_next"]
     model = RandomForestRegressor(n_estimators=200, random_state=42)
@@ -112,6 +127,7 @@ def train_predict_model(df):
     return summary
 
 def record_backtest(player_name, predictions):
+    """Save prediction for later validation"""
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     row = {"Player": player_name, "Timestamp": ts, **predictions}
     if os.path.exists(BACKTEST_FILE):
@@ -121,15 +137,28 @@ def record_backtest(player_name, predictions):
 
 # ---------- UI SELECTION ----------
 teams_df = get_teams()
-team = st.selectbox("Select Team", teams_df["full_name"].sort_values())
+if teams_df.empty:
+    st.error("⚠️ Could not load teams from BallDontLie.")
+    st.stop()
+
+team = st.selectbox("Select Team", sorted(teams_df["full_name"].unique()))
 
 players_df = get_players()
-players_team = players_df[players_df["team"].apply(lambda x: x and x["full_name"] == team)]
+players_team = players_df[players_df["team"].apply(lambda x: isinstance(x, dict) and x.get("full_name") == team)]
+
+if players_team.empty:
+    st.warning("⚠️ No players found for that team. Try another team.")
+    st.stop()
+
 player_name = st.selectbox("Select Player", players_team["first_name"] + " " + players_team["last_name"])
 
+# ---------- RUN MODEL ----------
 if player_name:
-    player_id = int(players_team.loc[(players_team["first_name"] + " " + players_team["last_name"]) == player_name, "id"].values[0])
-    
+    player_id = int(players_team.loc[
+        (players_team["first_name"] + " " + players_team["last_name"]) == player_name,
+        "id"
+    ].values[0])
+
     with st.spinner(f"Fetching {player_name}'s recent games..."):
         logs_df = get_player_game_logs(player_id, num_games=20)
         if logs_df.empty:
@@ -145,7 +174,8 @@ if player_name:
     categories = list(preds.keys())
     values = list(preds.values())
     fig.add_trace(go.Bar(x=categories, y=values, marker_color='#29B6F6'))
-    fig.update_layout(title=f"{player_name} Projected Statline", plot_bgcolor='#0A0F1C', paper_bgcolor='#0A0F1C',
+    fig.update_layout(title=f"{player_name} Projected Statline",
+                      plot_bgcolor='#0A0F1C', paper_bgcolor='#0A0F1C',
                       font=dict(color='white'), height=400)
     st.plotly_chart(fig, use_container_width=True)
 
