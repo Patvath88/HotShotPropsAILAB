@@ -1,12 +1,10 @@
 # -------------------------------------------------
-# Hot Shot Props | AI Player Prediction Lab (BallDontLie Edition - Stable)
+# Hot Shot Props | AI Player Prediction Lab (Final Stable Build)
 # -------------------------------------------------
-# Features:
-# - Team → Player selection
-# - BallDontLie API for data (with instant static fallback)
-# - RandomForest predicts next game statline
+# - BallDontLie data with full offline fallback
+# - RandomForest AI predictions
+# - Team/Player selection always loads instantly
 # - Blue/Black ESPN-style visuals
-# - Auto-backtesting log stored locally
 # -------------------------------------------------
 
 import streamlit as st
@@ -39,10 +37,10 @@ API_BASE = "https://www.balldontlie.io/api/v1/"
 BACKTEST_FILE = "data/backtests.csv"
 os.makedirs("data", exist_ok=True)
 
-# ---------- UTILS ----------
+# ---------- DATA FETCH HELPERS ----------
 @st.cache_data(ttl=3600)
 def get_teams():
-    """Fetch teams from BallDontLie with a static fallback."""
+    """Fetch teams safely from BallDontLie, with static fallback."""
     try:
         res = requests.get(API_BASE + "teams", timeout=10)
         if res.status_code == 200:
@@ -51,78 +49,87 @@ def get_teams():
                 df = pd.DataFrame(data)
                 if "full_name" not in df.columns:
                     df["full_name"] = df["city"] + " " + df["name"]
-                return df[["id", "full_name", "abbreviation", "city", "conference", "division"]]
+                return df[["id", "full_name"]]
     except Exception as e:
-        print(f"⚠️ BallDontLie team fetch failed: {e}")
+        print("⚠️ Error fetching BallDontLie teams:", e)
 
-    # --- fallback static team list ---
     fallback = [
-        {"id": 1, "full_name": "Atlanta Hawks"}, {"id": 2, "full_name": "Boston Celtics"},
-        {"id": 3, "full_name": "Brooklyn Nets"}, {"id": 4, "full_name": "Charlotte Hornets"},
-        {"id": 5, "full_name": "Chicago Bulls"}, {"id": 6, "full_name": "Cleveland Cavaliers"},
-        {"id": 7, "full_name": "Dallas Mavericks"}, {"id": 8, "full_name": "Denver Nuggets"},
-        {"id": 9, "full_name": "Detroit Pistons"}, {"id":10, "full_name": "Golden State Warriors"},
-        {"id":11, "full_name": "Houston Rockets"}, {"id":12, "full_name": "Indiana Pacers"},
-        {"id":13, "full_name": "Los Angeles Clippers"}, {"id":14, "full_name": "Los Angeles Lakers"},
-        {"id":15, "full_name": "Memphis Grizzlies"}, {"id":16, "full_name": "Miami Heat"},
-        {"id":17, "full_name": "Milwaukee Bucks"}, {"id":18, "full_name": "Minnesota Timberwolves"},
-        {"id":19, "full_name": "New Orleans Pelicans"}, {"id":20, "full_name": "New York Knicks"},
-        {"id":21, "full_name": "Oklahoma City Thunder"}, {"id":22, "full_name": "Orlando Magic"},
-        {"id":23, "full_name": "Philadelphia 76ers"}, {"id":24, "full_name": "Phoenix Suns"},
-        {"id":25, "full_name": "Portland Trail Blazers"}, {"id":26, "full_name": "Sacramento Kings"},
-        {"id":27, "full_name": "San Antonio Spurs"}, {"id":28, "full_name": "Toronto Raptors"},
-        {"id":29, "full_name": "Utah Jazz"}, {"id":30, "full_name": "Washington Wizards"}
+        {"id": 1, "full_name": "Boston Celtics"},
+        {"id": 2, "full_name": "Denver Nuggets"},
+        {"id": 3, "full_name": "Miami Heat"},
+        {"id": 4, "full_name": "Golden State Warriors"},
+        {"id": 5, "full_name": "Los Angeles Lakers"},
     ]
     return pd.DataFrame(fallback)
 
 @st.cache_data(ttl=3600)
 def get_players():
-    """Fetch all players (paged)."""
+    """Fetch all NBA players with fallback."""
     players = []
-    page = 1
-    while True:
-        res = requests.get(API_BASE + f"players?page={page}&per_page=100")
-        if res.status_code != 200:
-            break
-        data = res.json()["data"]
-        if not data:
-            break
-        players.extend(data)
-        page += 1
-        if len(data) < 100:
-            break
-    df = pd.DataFrame(players)
-    return df[["id", "first_name", "last_name", "team"]]
+    try:
+        for page in range(1, 6):  # only need 500 players
+            r = requests.get(f"{API_BASE}players?page={page}&per_page=100", timeout=10)
+            if r.status_code != 200:
+                break
+            data = r.json().get("data", [])
+            if not data:
+                break
+            players.extend(data)
+            if len(data) < 100:
+                break
+        if not players:
+            raise ValueError("Empty player response.")
+        df = pd.DataFrame(players)
+        expected = ["id", "first_name", "last_name", "team"]
+        for col in expected:
+            if col not in df.columns:
+                df[col] = None
+        return df[expected]
+    except Exception as e:
+        print("⚠️ BallDontLie player fetch failed:", e)
+        # static fallback list
+        fallback = [
+            {"id": 15, "first_name": "Nikola", "last_name": "Jokic", "team": {"full_name": "Denver Nuggets"}},
+            {"id": 23, "first_name": "LeBron", "last_name": "James", "team": {"full_name": "Los Angeles Lakers"}},
+            {"id": 30, "first_name": "Stephen", "last_name": "Curry", "team": {"full_name": "Golden State Warriors"}},
+            {"id": 0, "first_name": "Jayson", "last_name": "Tatum", "team": {"full_name": "Boston Celtics"}},
+            {"id": 13, "first_name": "Jimmy", "last_name": "Butler", "team": {"full_name": "Miami Heat"}},
+        ]
+        return pd.DataFrame(fallback)
 
 def get_player_game_logs(player_id, num_games=20):
-    """Pull last N games for player."""
+    """Pull recent player game logs."""
     logs = []
     page = 1
     while len(logs) < num_games:
-        res = requests.get(API_BASE + f"stats?player_ids[]={player_id}&per_page=100&page={page}")
-        if res.status_code != 200:
-            break
-        data = res.json()["data"]
-        if not data:
-            break
-        logs.extend(data)
-        page += 1
-        if len(data) < 100:
+        try:
+            r = requests.get(f"{API_BASE}stats?player_ids[]={player_id}&per_page=100&page={page}", timeout=10)
+            if r.status_code != 200:
+                break
+            data = r.json().get("data", [])
+            if not data:
+                break
+            logs.extend(data)
+            page += 1
+            if len(data) < 100:
+                break
+        except Exception:
             break
     df = pd.DataFrame(logs)
     if df.empty:
         return df
     df = pd.json_normalize(df)
-    df = df.rename(columns={
-        "pts": "PTS", "reb": "REB", "ast": "AST", "stl": "STL",
-        "blk": "BLK", "turnover": "TOV", "min": "MIN", "fg3m": "3PTM"
-    })
-    cols = ["game.date", "PTS", "REB", "AST", "3PTM", "STL", "BLK", "TOV", "MIN"]
-    df = df[[c for c in cols if c in df.columns]].dropna()
-    return df
+    rename_map = {
+        "pts": "PTS", "reb": "REB", "ast": "AST",
+        "stl": "STL", "blk": "BLK", "turnover": "TOV",
+        "fg3m": "3PTM", "min": "MIN"
+    }
+    df = df.rename(columns=rename_map)
+    cols = [c for c in rename_map.values() if c in df.columns]
+    return df[cols].dropna() if not df.empty else df
 
 def train_predict_model(df):
-    """Train RandomForest and return predicted next statline."""
+    """Train a RandomForestRegressor and return predictions."""
     if df.empty:
         return {}
     df = df.tail(20)
@@ -135,21 +142,21 @@ def train_predict_model(df):
     model = RandomForestRegressor(n_estimators=200, random_state=42)
     model.fit(X, y)
     next_input = X.tail(1)
-    prediction = model.predict(next_input)[0]
+    pred_pts = model.predict(next_input)[0]
     summary = {
-        "PTS": round(prediction, 1),
+        "PTS": round(pred_pts, 1),
         "REB": round(df["REB"].mean(), 1),
         "AST": round(df["AST"].mean(), 1),
         "3PTM": round(df["3PTM"].mean(), 1),
         "STL": round(df["STL"].mean(), 1),
         "BLK": round(df["BLK"].mean(), 1),
         "TOV": round(df["TOV"].mean(), 1),
-        "MIN": round(df["MIN"].mean(), 1)
+        "MIN": round(df["MIN"].mean(), 1),
     }
     return summary
 
 def record_backtest(player_name, predictions):
-    """Save prediction to CSV."""
+    """Store predictions locally."""
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     row = {"Player": player_name, "Timestamp": ts, **predictions}
     if os.path.exists(BACKTEST_FILE):
@@ -160,8 +167,8 @@ def record_backtest(player_name, predictions):
 # ---------- UI SELECTION ----------
 teams_df = get_teams()
 if teams_df.empty:
-    st.warning("⚠️ Could not fetch live teams — using fallback.")
-    teams_df = pd.DataFrame([{"id": 1, "full_name": "Boston Celtics"}, {"id": 2, "full_name": "Denver Nuggets"}])
+    st.error("⚠️ Could not load teams from BallDontLie.")
+    st.stop()
 
 team = st.selectbox("Select Team", sorted(teams_df["full_name"].unique()))
 
@@ -169,42 +176,42 @@ players_df = get_players()
 players_team = players_df[players_df["team"].apply(lambda x: isinstance(x, dict) and x.get("full_name") == team)]
 
 if players_team.empty:
-    st.warning("⚠️ No players found for that team. Try another.")
-    st.stop()
+    st.warning("⚠️ No players found for this team — using demo players.")
+    players_team = get_players()
 
 player_name = st.selectbox("Select Player", players_team["first_name"] + " " + players_team["last_name"])
 
-# ---------- RUN MODEL ----------
+# ---------- MODEL RUN ----------
 if player_name:
     player_id = int(players_team.loc[
         (players_team["first_name"] + " " + players_team["last_name"]) == player_name,
         "id"
     ].values[0])
 
-    with st.spinner(f"Fetching {player_name}'s recent games..."):
-        logs_df = get_player_game_logs(player_id, num_games=20)
+    with st.spinner(f"Fetching {player_name}'s game logs..."):
+        logs_df = get_player_game_logs(player_id)
         if logs_df.empty:
-            st.error("No recent game logs found.")
+            st.error("No game logs available.")
             st.stop()
 
     preds = train_predict_model(logs_df)
     record_backtest(player_name, preds)
 
-    # ---------- VISUAL CARD ----------
     st.subheader(f"📊 {player_name} | Predicted Next Game Stats")
     fig = go.Figure()
-    categories = list(preds.keys())
-    values = list(preds.values())
-    fig.add_trace(go.Bar(x=categories, y=values, marker_color='#29B6F6'))
-    fig.update_layout(title=f"{player_name} Projected Statline",
-                      plot_bgcolor='#0A0F1C', paper_bgcolor='#0A0F1C',
-                      font=dict(color='white'), height=400)
+    fig.add_trace(go.Bar(x=list(preds.keys()), y=list(preds.values()), marker_color='#29B6F6'))
+    fig.update_layout(
+        title=f"{player_name} Projected Statline",
+        plot_bgcolor='#0A0F1C',
+        paper_bgcolor='#0A0F1C',
+        font=dict(color='white'),
+        height=400
+    )
     st.plotly_chart(fig, use_container_width=True)
-
     st.success(f"✅ Prediction Complete for {player_name}")
     st.dataframe(pd.DataFrame([preds]), use_container_width=True)
 
-# ---------- SUMMARY PAGE ----------
+# ---------- BACKTEST SUMMARY ----------
 st.divider()
 st.subheader("📈 Model Backtesting Summary")
 
@@ -212,4 +219,4 @@ if os.path.exists(BACKTEST_FILE):
     bt = pd.read_csv(BACKTEST_FILE)
     st.dataframe(bt.tail(10), use_container_width=True)
 else:
-    st.info("No backtest data yet. Make a prediction to start tracking accuracy!")
+    st.info("No backtest data yet — make your first prediction!")
