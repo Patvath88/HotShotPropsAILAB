@@ -1,12 +1,11 @@
 # -------------------------------------------------
-# 🏀 Hot Shot Props — NBA Player AI Prediction Lab (Final Build)
+# 🏀 Hot Shot Props — NBA Player AI Prediction Lab (Final Build, Safe Patch)
 # -------------------------------------------------
 # Features:
 # - Team → Player instant selection
 # - RandomForest AI model for stat projections
 # - Blue/Black themed visuals
-# - Retry-safe nba_api calls with 10s timeout
-# - Backtesting log for model success tracking
+# - Fully compatible with all nba_api versions
 # -------------------------------------------------
 
 import streamlit as st
@@ -16,21 +15,19 @@ from datetime import datetime
 from sklearn.ensemble import RandomForestRegressor
 from nba_api.stats.static import teams
 from nba_api.stats.endpoints import playergamelog, commonteamroster
-# --- Safe NBA API timeout patch (for all versions) ---
-try:
-    import nba_api.library.http as nba_http
-    if hasattr(nba_http, "NBAStatsHTTP"):
-        nba_http.NBAStatsHTTP.TIMEOUT = 10
-    elif hasattr(nba_http, "timeout"):
-        nba_http.timeout = 10
-except Exception:
-    pass  # fallback if library structure changes
 import plotly.graph_objects as go
 import os
 import time
 
-# ---------- PATCH: shorten NBA API timeout ----------
-NBAStatsHTTP.TIMEOUT = 10  # prevents streamlit cloud from hanging
+# --- Safe NBA API Timeout Patch ---
+try:
+    import importlib
+    nba_http = importlib.import_module("nba_api.library.http")
+    if hasattr(nba_http, "NBAStatsHTTP"):
+        nba_http.NBAStatsHTTP.TIMEOUT = 10
+except Exception:
+    # fallback no-op to prevent import errors
+    pass
 
 # ---------- PAGE CONFIG ----------
 st.set_page_config(
